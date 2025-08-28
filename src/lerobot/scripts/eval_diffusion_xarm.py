@@ -12,6 +12,7 @@ from lerobot.configs import parser
 from lerobot.policies.factory import make_policy
 from lerobot.configs.eval import EvalPipelineConfig
 from lerobot.utils.utils import get_safe_torch_device
+from lerobot.envs.utils import preprocess_observation
 
 # 全局共享变量（线程间通信）
 latest_base_image = None
@@ -79,8 +80,8 @@ def camera_thread(enable_recording=False, save_path="./recorded_video.mp4"):
         save_path (str): 录制视频保存路径
     """
     global latest_base_image, latest_wrist_image
-    base_camera = cv2.VideoCapture("/dev/video4")
-    wrist_camera = cv2.VideoCapture("/dev/video10")
+    base_camera = cv2.VideoCapture("/dev/video10")
+    wrist_camera = cv2.VideoCapture("/dev/video4")
 
     if not base_camera.isOpened() or not wrist_camera.isOpened():
         print("错误：无法打开摄像头")
@@ -191,17 +192,28 @@ def inference_thread():
         _, gripper = arm.get_gripper_position()
         state = np.append(np.rad2deg(joint_rad[:-1]), gripper)
 
+        # observation = {
+        #     "observation.images.image_1": convert_to_uint8(
+        #         resize_with_pad(base_img, resize_size, resize_size)
+        #     ),
+        #     "observation.images.image_2": convert_to_uint8(
+        #         resize_with_pad(wrist_img, resize_size, resize_size)
+        #     ),
+        #     "agent_pos": state # for preprocess_observation usage
+        # }
         observation = {
-            "observation.images.image_1": convert_to_uint8(
-                resize_with_pad(base_img, resize_size, resize_size)
-            ),
-            "observation.images.image_2": convert_to_uint8(
-                resize_with_pad(wrist_img, resize_size, resize_size)
-            ),
-            "observation.state": state
+            "pixels": {
+                "image_1": convert_to_uint8(resize_with_pad(base_img, resize_size, resize_size)),
+                "image_2": convert_to_uint8(resize_with_pad(wrist_img, resize_size, resize_size)),
+            },
+            "agent_pos": state
         }
 
-        observation = policy.preprocess_observation(observation)
+        observation = preprocess_observation(observation)
+        # print("Observation keys after preprocess:", observation.keys())
+        observation = {
+            key: observation[key].to(device, non_blocking=device.type == "cuda") for key in observation
+        }
         with torch.inference_mode():
             action = policy.select_action(observation)
             action_np = action.cpu().numpy().squeeze()
@@ -216,7 +228,7 @@ def inference_thread():
 # 主函数：开启两个线程
 if __name__ == "__main__":
     # 模型参数配置
-    PRETRAINED_PATH = "outputs/train/2025-08-22/17-01-04_diffusion/checkpoints/pretrained_model"
+    PRETRAINED_PATH = "/home/bozhao/code/scy/lerobot/outputs/train/2025-08-22/17-01-04_diffusion/checkpoints/500000/pretrained_model"
     # 录制配置
     ENABLE_RECORDING = False  # 设置为True启用录制，False禁用录制
     import datetime
